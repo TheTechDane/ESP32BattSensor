@@ -1,0 +1,66 @@
+esphome:
+  name: outside
+  friendly_name: outside
+
+esp32:
+  board: esp32-c6-devkitc-1
+  flash_size: 4MB
+  variant: esp32c6
+  framework:
+    type: esp-idf
+
+#This is unly until ADC will be supported under ESP32C6
+external_components:
+  - source: github://PhracturedBlue/c6_adc
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "2nIWZ7lvSUE2qkBFwHimA7LG9/1+qp2zy3la923AFhw="
+
+ota:
+  - platform: esphome
+    password: "16b7690f5e152abbd408686219153d2a"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Outside Fallback Hotspot"
+    password: "bTvuGwnLwfbo"
+
+captive_portal:
+
+sensor:
+  - platform: bme280_i2c
+    address: 0x76
+    temperature:
+      name: "Temperature"
+      id: temp
+    pressure:
+      name: "Pressure"
+      id: press
+    humidity:
+      name: "Humidity"
+      id: humidity
+
+  - platform: c6_adc
+    name: Battery voltage
+    id: batt
+    pin: GPIO0
+    attenuation: 12dB  # optional.  defaults to 12dB
+    accuracy_decimals: 2
+    update_interval: 60s
+    filters:
+      - multiply: 2.0  # The voltage divider requires us to multiply by 2
+
+i2c:
+  sda: GPIO22
+  scl: GPIO23
+  scan: true
+  frequency: 400kHz    
