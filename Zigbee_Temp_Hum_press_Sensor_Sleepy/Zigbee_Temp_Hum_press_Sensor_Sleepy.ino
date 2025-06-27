@@ -34,7 +34,7 @@
 
 #define BATT_EMPTY 2.90
 #define BATT_FULL 4.02
-#define BATT_PIN A2
+#define BATT_PIN A0
 #define SDA_PIN D4
 #define SCL_PIN D5
 #define BME280_ADDR 0x76
@@ -55,11 +55,9 @@ ZigbeePressureSensor zbPressureSensor = ZigbeePressureSensor(PRESSURE_SENSOR_END
 
 /************************ Temp sensor *****************************/
 void meausureAndSleep() {
-  // Measure temperature sensor value
-  float temperature = temperatureRead();
-  // Use temperature value as humidity value to demonstrate both temperature and humidity
-  float humidity = temperature;
-  float pressure = 1000 + temperature;
+  float temperature = bme.readTemperature();    // Measure temperature sensor value
+  float humidity = bme.readHumidity();          // Messure humidity value
+  float pressure = bme.readPressure() / 100.0F; // Convert Pa to hPa
   int batt = getCurrentBatteryPercent();
 
   // Update temperature and humidity values in Temperature sensor EP
@@ -79,9 +77,9 @@ void meausureAndSleep() {
   delay(100);
 
   // Put device to deep sleep
- // Serial.println("Going to sleep now");
- // esp_deep_sleep_start();
- delay(10000);
+  Serial.println("Going to sleep now");
+  esp_deep_sleep_start();
+  //delay(10000);    //Delay when debugging
 }
 
 void blinkLED(int iBlinkDelay = 300) {
@@ -102,7 +100,7 @@ void setup() {
   pinMode(button, INPUT_PULLUP);
   pinMode(USER_LED, OUTPUT);
   pinMode(BATT_PIN, INPUT);         // ADC
-  blinkLED();
+  //blinkLED();  //Need logic around sleep.
 
   //IC2 - Initiate
   delay(1000);
