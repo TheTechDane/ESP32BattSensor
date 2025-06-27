@@ -25,15 +25,21 @@
 #error "Zigbee end device mode is not selected in Tools->Zigbee mode"
 #endif
 
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 #include "Zigbee.h"
+
+#define SENSOR_NAME "Mini weather station"
+#define SENSOR_MANUFACTURER "The Tech Dane"
+
 #define BATT_EMPTY 2.90
 #define BATT_FULL 4.02
 #define BATT_PIN A2
 #define SDA_PIN D4
 #define SCL_PIN D5
 #define BME280_ADDR 0x76
-#define button = BOOT_PIN;            //The factory reste pin.
-#define USER_LED = LED_BUILTIN;
+#define button BOOT_PIN            //The factory reste pin.
+#define USER_LED LED_BUILTIN
 
 Adafruit_BME280 bme; // I2C
 
@@ -62,7 +68,7 @@ void meausureAndSleep() {
   zbTempSensor.report();
   Serial.printf("Reported temperature: %.2f°C, Humidity: %.2f%%\r\n", temperature, humidity);
 
-  zbTempSensor.setBatteryPercentage(batt);
+  zbTempSensor.setBatteryPercentage(batt);  
   zbTempSensor.reportBatteryPercentage();
   Serial.printf("Reported battery: %i%%\r\n", batt);
 
@@ -78,7 +84,17 @@ void meausureAndSleep() {
  delay(10000);
 }
 
-/********************* Arduino functions **************************/
+void blinkLED(int iBlinkDelay = 300) {
+    for (int i=0; i<3; i++) {
+    digitalWrite(USER_LED, LOW);  // turn the LED on 
+    delay(iBlinkDelay);                      
+    Serial.println("Blink..");  
+    digitalWrite(USER_LED, HIGH);   // turn the LED off 
+    delay(iBlinkDelay);   
+  }
+}
+
+/********************* SETUP **************************/
 void setup() {
   Serial.begin(115200);
 
@@ -86,6 +102,7 @@ void setup() {
   pinMode(button, INPUT_PULLUP);
   pinMode(USER_LED, OUTPUT);
   pinMode(BATT_PIN, INPUT);         // ADC
+  blinkLED();
 
   //IC2 - Initiate
   delay(1000);
@@ -107,32 +124,23 @@ void setup() {
   // Configure the wake up source and set to wake up every 5 seconds
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
 
-  // Optional: set Zigbee device name and model
-  zbTempSensor.setManufacturerAndModel("TheTechDane", "TempHumidSensor");
+  //Initial TempSensor config
+  zbTempSensor.setManufacturerAndModel(SENSOR_MANUFACTURER, SENSOR_NAME);   // Optional: set Zigbee device name and model
+  zbTempSensor.setMinMaxValue(10, 50);                                      // Set minimum and maximum temperature measurement value (10-50°C is default range for chip temperature measurement)
+  zbTempSensor.setTolerance(1);                                             // Set tolerance for temperature measurement in °C (lowest possible value is 0.01°C)
+  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, 100);                // The value can be also updated by calling zbTempSensor.setBatteryPercentage(percentage) anytime
+  zbTempSensor.addHumiditySensor(0, 100, 1);                                // Add humidity cluster to the temperature sensor device with min, max and tolerance values
 
-  // Set minimum and maximum temperature measurement value (10-50°C is default range for chip temperature measurement)
-  zbTempSensor.setMinMaxValue(10, 50);
-
-  // Set tolerance for temperature measurement in °C (lowest possible value is 0.01°C)
-  zbTempSensor.setTolerance(1);
-
-  // The value can be also updated by calling zbTempSensor.setBatteryPercentage(percentage) anytime
-  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, 100);
-
-  // Add humidity cluster to the temperature sensor device with min, max and tolerance values
-  zbTempSensor.addHumiditySensor(0, 100, 1);
-
-
-  // Optional: set Zigbee device name and model
-  zbPressureSensor.setManufacturerAndModel("TheTechDane", "PressureSensor");
-
+  //
+  // Preassure sensor
+  //
+  //zbPressureSensor.setManufacturerAndModel("The Tech Dane", "PressureSensor");
   // Set minimum and maximum pressure measurement value in hPa
   zbPressureSensor.setMinMaxValue(0, 10000);
-
   // Optional: Set tolerance for pressure measurement in hPa
   zbPressureSensor.setTolerance(1);
 
-  // Add endpoint to Zigbee Core
+  // Add both endpoint to Zigbee Core
   Zigbee.addEndpoint(&zbTempSensor);
   Zigbee.addEndpoint(&zbPressureSensor);
 
@@ -162,16 +170,18 @@ void setup() {
   delay(1000);
 }
 
+/************************* LOOP ****************************/
 void loop() {
   // Checking button for factory reset
   Serial.println("Button : " + (digitalRead(button) == LOW));
   if (digitalRead(button) == LOW) {  // Push button pressed
     // Key debounce handling
-    delay(100);
     int startTime = millis();
     while (digitalRead(button) == LOW) {
-      delay(50);
-      if ((millis() - startTime) > 10000) {
+      blinkLED(100);
+      //delay(50);
+      if ((millis() - startTime) > 5000) {
+        digitalWrite(USER_LED, LOW);  // turn the LED
         // If key pressed for more than 10secs, factory reset Zigbee and reboot
         Serial.println("Resetting Zigbee to factory and rebooting in 1s.");
         delay(1000);
@@ -188,20 +198,24 @@ void loop() {
   meausureAndSleep();
 }
 
-int getCurrentBatteryPercent() {
-  int battPercent = 1;
+float getBatteryVoltage() {
   uint32_t Vbatt = 0;
   for(int i = 0; i < 16; i++) {
     Vbatt = Vbatt + analogReadMilliVolts(BATT_PIN); // ADC with correction   
   }
   float Vbattf = 2* Vbatt / 16 / 1000.0;     // attenuation ratio 1/2, mV --> V
+  return Vbattf;
+}
+
+int getCurrentBatteryPercent() {
+  float Vbattf = getBatteryVoltage();
   Serial.print("Battery Voltage: ");
   Serial.print(Vbattf, 3);
 
   // Calculate the voltage range
   float voltageRange = BATT_FULL - BATT_EMPTY;
   // Calculate the battery percentage
-  battPercent = ((Vbattf - BATT_EMPTY) / voltageRange) * 100.0;
+  int battPercent = ((Vbattf - BATT_EMPTY) / voltageRange) * 100.0;
 
   Serial.print(" Battery Percentage: ");
   Serial.println(battPercent);
