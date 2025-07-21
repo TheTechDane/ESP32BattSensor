@@ -111,14 +111,13 @@ void setup() {
   pinMode(button, INPUT_PULLUP);
   pinMode(USER_LED, OUTPUT);
   pinMode(BATT_PIN, INPUT);         // ADC
-  blinkLEDOnce();
-  //blinkLED();  //Need logic around sleep.
-
-  
+  blinkLEDOnce();                   //To show that the process is running.
+ 
   //
   // Check Reboot reason
   //
   int iBootReason = esp_reset_reason();               // but I still can use and find the ummerical value
+   Serial.print("Reset/Boot Reason was: "); Serial.println( iBootReason );
   if ( iBootReason == ESP_RST_POWERON ) {             // Reset due to power-on event.
     Serial.print("Reboot was because of Power-On!!  - Waiting ");
     Serial.print(RESET_DELAY);
@@ -133,9 +132,6 @@ void setup() {
   if ( iBootReason == ESP_RST_EXT ) {                  // Reset due to power-on event.
     Serial.println("Reboot was because of External reset!!");
   }
-  
-  Serial.print("Reset/Boot Reason was: "); Serial.println( iBootReason );
-  //
   
   //IC2 - Initiate
   delay(1000);
