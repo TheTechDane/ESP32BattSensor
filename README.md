@@ -30,7 +30,11 @@ If you have changed any of the pins (Battery and the I2C bus). Also if you are u
 Open, compile and upload the code to the ESP32c6.. 
 
 ### Connecting the first time
-The sensor will be in paring mode when  
+The sensor will be in paring mode when it starts up. this will be after the 10 sec wait if you have reset the device (see bellow) Go and search for it in your Home automation console and pair it. 
+
+### Programming after first run
+When the device is paired, it can be hard to re program the device, a 10 seconds delay has been added to the code when a reset is pressed. Meaning if you need to program it wait til the compile is done before upload them press the reset button, the User light (yellow) will come on for the 10 minutes wait.
+
 
 ### Reset to factory
 If the device is already registered in a home automation -- Remove ZigBee entry..
