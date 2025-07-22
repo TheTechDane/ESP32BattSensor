@@ -64,17 +64,19 @@ void meausureAndSleep() {
   float temperature = bme.readTemperature();    // Measure temperature sensor value
   float humidity = bme.readHumidity();          // Messure humidity value
   int pressure = round(bme.readPressure() / 100.0F); // Convert Pa to hPa
-  int batt = getCurrentBatteryPercent();
+  int battPercent = getCurrentBatteryPercent();
+  int battVoltage = getBatteryVoltage() * 10;
 
   // Update temperature and humidity values in Temperature sensor EP
   zbTempSensor.setTemperature(temperature);
   zbTempSensor.setHumidity(humidity);
+  zbTempSensor.setBatteryPercentage(battPercent);  
+  zbTempSensor.setBatteryVoltage(battVoltage);                                                                 // voltage in 100mV (example value 35 for 3.5V)
+
+  zbTempSensor.reportBatteryPercentage();
+  Serial.printf("Reported battery: %i%%  voltage: %i (x10) \r\n", battPercent,battVoltage);
   zbTempSensor.report();
   Serial.printf("Reported temperature: %.2f°C, Humidity: %.2f%%\r\n", temperature, humidity);
-
-  zbTempSensor.setBatteryPercentage(batt);  
-  zbTempSensor.reportBatteryPercentage();
-  Serial.printf("Reported battery: %i%%\r\n", batt);
 
   Serial.printf("Updating pressure sensor value to %i hPa\r\n", pressure);
   zbPressureSensor.setPressure(pressure);
@@ -152,12 +154,14 @@ void setup() {
 
   // Configure the wake up source and set to wake up every xx secunds
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  int battPercent = getCurrentBatteryPercent();
+  int battVoltage = getBatteryVoltage() * 10;
 
   //Initial TempSensor config
   zbTempSensor.setManufacturerAndModel(SENSOR_MANUFACTURER, SENSOR_NAME);   // Optional: set Zigbee device name and model
   zbTempSensor.setMinMaxValue(10, 50);                                      // Set minimum and maximum temperature measurement value (10-50°C is default range for chip temperature measurement)
   zbTempSensor.setTolerance(1);                                             // Set tolerance for temperature measurement in °C (lowest possible value is 0.01°C)
-  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, 0);                  // The value can be also updated by calling zbTempSensor.setBatteryPercentage(percentage) anytime
+  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, battPercent, battVoltage);               // The value can be also updated by calling zbTempSensor.setBatteryPercentage(percentage) anytime
   zbTempSensor.addHumiditySensor(0, 100, 1);                                // Add humidity cluster to the temperature sensor device with min, max and tolerance values
 
   //
