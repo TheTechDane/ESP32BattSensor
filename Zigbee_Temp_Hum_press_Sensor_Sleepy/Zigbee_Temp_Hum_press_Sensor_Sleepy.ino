@@ -26,10 +26,10 @@
 #error "Zigbee end device mode is not selected in Tools->Zigbee mode"
 #endif
 
-#include <math.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 #include "Zigbee.h"
+#include <Wire.h>
 
 #define SENSOR_NAME "Mini weather station"
 #define SENSOR_MANUFACTURER "The Tech Dane"
@@ -42,10 +42,13 @@
 #define BME280_ADDR 0x76
 #define button BOOT_PIN            //The factory reste pin.
 #define USER_LED LED_BUILTIN
+#define nrBattSamples 5                //Battery meassurement - Was 16 to start with
 
 Adafruit_BME280 bme; // I2C
+
 // A variable to hold the reset cause flags
-byte resetFlags;
+bool wasResetRestart = false;
+int rebootTime = 0;
 
 /* Zigbee temperature + humidity sensor configuration */
 #define TEMP_SENSOR_ENDPOINT_NUMBER 10
@@ -59,36 +62,46 @@ byte resetFlags;
 ZigbeeTempSensor zbTempSensor = ZigbeeTempSensor(TEMP_SENSOR_ENDPOINT_NUMBER);
 ZigbeePressureSensor zbPressureSensor = ZigbeePressureSensor(PRESSURE_SENSOR_ENDPOINT_NUMBER);
 
-/************************ Temp sensor *****************************/
-void meausureAndSleep() {
+/******************************************************************
+*
+*  Do the Actual Measurement 
+*
+******************************************************************/
+void doMeasurement() {
   float temperature = bme.readTemperature();    // Measure temperature sensor value
   float humidity = bme.readHumidity();          // Messure humidity value
   int pressure = round(bme.readPressure() / 100.0F); // Convert Pa to hPa
   int battPercent = getCurrentBatteryPercent();
-  int battVoltage = getBatteryVoltage() * 10;
-
+  
   // Update temperature and humidity values in Temperature sensor EP
   zbTempSensor.setTemperature(temperature);
   zbTempSensor.setHumidity(humidity);
-  zbTempSensor.setBatteryPercentage(battPercent);  
-  zbTempSensor.setBatteryVoltage(battVoltage);                                                                 // voltage in 100mV (example value 35 for 3.5V)
-
-  zbTempSensor.reportBatteryPercentage();
-  Serial.printf("Reported battery: %i%%  voltage: %i (x10) \r\n", battPercent,battVoltage);
   zbTempSensor.report();
   Serial.printf("Reported temperature: %.2f°C, Humidity: %.2f%%\r\n", temperature, humidity);
+
+  // To save battery - it is allready done in init 
+  //int battVoltage = getBatteryVoltage() * 100;
+  zbTempSensor.setBatteryPercentage(battPercent);  
+  //zbTempSensor.setBatteryVoltage(battVoltage);                                                                 // voltage in 100mV (example value 35 for 3.5V)
+  zbTempSensor.reportBatteryPercentage();
+  Serial.printf("Reported battery: %i%% \r\n", battPercent);
+  //Serial.printf("Reported battery: %i%%  voltage: %i (x10) \r\n", battPercent,battVoltage);
 
   Serial.printf("Updating pressure sensor value to %i hPa\r\n", pressure);
   zbPressureSensor.setPressure(pressure);
   zbPressureSensor.report();
 
   // Add small delay to allow the data to be sent before going to sleep
-  delay(1000);
+  delay(500);
+}
+
+void gotoSleep() {
+  //Put Sensor to sleep
+  BME280_Sleep(BME280_ADDR);
 
   // Put device to deep sleep
   Serial.println("Going to sleep now");
   esp_deep_sleep_start();
-  //delay(10000);    //Delay when debugging
 }
 
 void blinkLEDOnce(int iBlinkDelay = 300) {
@@ -119,14 +132,12 @@ void setup() {
   // Check Reboot reason
   //
   int iBootReason = esp_reset_reason();               // but I still can use and find the ummerical value
-   Serial.print("Reset/Boot Reason was: "); Serial.println( iBootReason );
+  Serial.print("Reset/Boot Reason was: "); Serial.println( iBootReason );
   if ( iBootReason == ESP_RST_POWERON ) {             // Reset due to power-on event.
     Serial.print("Reboot was because of Power-On!!  - Waiting ");
     Serial.print(RESET_DELAY);
     Serial.println(" Sec.");
-    digitalWrite(USER_LED, LOW);  // turn on the LED
-    delay(RESET_DELAY * 1000);    // Convert to milisecunds
-    digitalWrite(USER_LED, LOW);  // turn off the LED
+    wasResetRestart = true;
   }
   if ( iBootReason == ESP_RST_DEEPSLEEP) {                  // Reset due to power-on event.
     Serial.println("Reboot was because of DeepSleep!!");
@@ -134,9 +145,10 @@ void setup() {
   if ( iBootReason == ESP_RST_EXT ) {                  // Reset due to power-on event.
     Serial.println("Reboot was because of External reset!!");
   }
+  rebootTime = millis();
   
   //IC2 - Initiate
-  delay(1000);
+  //delay(500);
   Wire.begin();
   Wire.beginTransmission(BME280_ADDR);
   int error = Wire.endTransmission();
@@ -154,14 +166,14 @@ void setup() {
 
   // Configure the wake up source and set to wake up every xx secunds
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-  int battPercent = getCurrentBatteryPercent();
-  int battVoltage = getBatteryVoltage() * 10;
+  //int battPercent = getCurrentBatteryPercent();
+  //int battVoltage = getBatteryVoltage() * 10;
 
   //Initial TempSensor config
   zbTempSensor.setManufacturerAndModel(SENSOR_MANUFACTURER, SENSOR_NAME);   // Optional: set Zigbee device name and model
-  zbTempSensor.setMinMaxValue(10, 50);                                      // Set minimum and maximum temperature measurement value (10-50°C is default range for chip temperature measurement)
+  zbTempSensor.setMinMaxValue(-30, 50);                                      // Set minimum and maximum temperature measurement value (10-50°C is default range for chip temperature measurement)
   zbTempSensor.setTolerance(1);                                             // Set tolerance for temperature measurement in °C (lowest possible value is 0.01°C)
-  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, battPercent, battVoltage);               // The value can be also updated by calling zbTempSensor.setBatteryPercentage(percentage) anytime
+  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY);     // The value can be also updated by calling zbTempSensor.setBatteryPercentage(percentage) anytime
   zbTempSensor.addHumiditySensor(0, 100, 1);                                // Add humidity cluster to the temperature sensor device with min, max and tolerance values
 
   //
@@ -224,20 +236,26 @@ void loop() {
         esp_deep_sleep_start();
       }
     }
+  } else if (wasResetRestart) {
+    //Check if reset was pressed - and time has been passed
+    if ((millis() - rebootTime) < (RESET_DELAY * 1000)) {
+      blinkLED(1000);
+    } else {
+      wasResetRestart = false;
+    }
   } else {
-    //Check if reset was pressed.
+    // Call the function to measure temperature and put the device to sleep
+    doMeasurement();
+    gotoSleep();
   }
-
-  // Call the function to measure temperature and put the device to sleep
-  meausureAndSleep();
 }
 
 float getBatteryVoltage() {
   uint32_t Vbatt = 0;
-  for(int i = 0; i < 16; i++) {
+  for(int i = 0; i < nrBattSamples; i++) {
     Vbatt = Vbatt + analogReadMilliVolts(BATT_PIN); // ADC with correction   
   }
-  float Vbattf = 2* Vbatt / 16 / 1000.0;     // attenuation ratio 1/2, mV --> V
+  float Vbattf = 2* Vbatt / nrBattSamples / 1000.0;     // attenuation ratio 1/2, mV --> V
   return Vbattf;
 }
 
@@ -256,4 +274,20 @@ int getCurrentBatteryPercent() {
   Serial.println(battPercent);
 
   return battPercent;
+}
+
+void BME280_Sleep(int device_address) {
+  // FROM: https://github.com/G6EJD/BME280-Sleep-and-Address-change/blob/master/BME280_Sleep.ino
+  //
+  // BME280 Register 0xF4 (control measurement register) sets the device mode, specifically bits 1,0
+  // The bit positions are called 'mode[1:0]'. See datasheet Table 25 and Paragraph 3.3 for more detail.
+  // Mode[1:0]  Mode
+  //    00      'Sleep'  mode
+  //  01 / 10   'Forced' mode, use either '01' or '10'
+  //    11      'Normal' mode
+  Serial.println("BME280 to Sleep mode...");
+  Wire.beginTransmission(device_address);
+  Wire.write((uint8_t)0xF4);       // Select Control Measurement Register
+  Wire.write((uint8_t)0b00000000); // Send '00' for Sleep mode
+  Wire.endTransmission();
 }
