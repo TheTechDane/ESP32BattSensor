@@ -68,6 +68,21 @@ ZigbeePressureSensor zbPressureSensor = ZigbeePressureSensor(PRESSURE_SENSOR_END
 *
 ******************************************************************/
 void doMeasurement() {
+  //IC2 - Initiate
+  Wire.begin();
+  Wire.beginTransmission(BME280_ADDR);
+  int error = Wire.endTransmission();
+  if (error == 0) {
+      Serial.printf("I2C device found at address 0x%02X\n", BME280_ADDR);
+  }
+
+  bool status = bme.begin(BME280_ADDR);
+  if (!status) {
+    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
+    //while (1);
+  } else {
+    Serial.println(F("BME280 Sensor Initialized:"));
+  }
   float temperature = bme.readTemperature();    // Measure temperature sensor value
   float humidity = bme.readHumidity();          // Messure humidity value
   int pressure = round(bme.readPressure() / 100.0F); // Convert Pa to hPa
@@ -98,7 +113,6 @@ void doMeasurement() {
 void gotoSleep() {
   //Put Sensor to sleep
   BME280_Sleep(BME280_ADDR);
-
   // Put device to deep sleep
   Serial.println("Going to sleep now");
   esp_deep_sleep_start();
@@ -147,22 +161,7 @@ void setup() {
   }
   rebootTime = millis();
   
-  //IC2 - Initiate
-  //delay(500);
-  Wire.begin();
-  Wire.beginTransmission(BME280_ADDR);
-  int error = Wire.endTransmission();
-  if (error == 0) {
-      Serial.printf("I2C device found at address 0x%02X\n", BME280_ADDR);
-  }
 
-  bool status = bme.begin(BME280_ADDR);
-  if (!status) {
-    Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
-    //while (1);
-  } else {
-    Serial.println(F("BME280 Sensor Initialized:"));
-  }
 
   // Configure the wake up source and set to wake up every xx secunds
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
