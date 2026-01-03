@@ -1,0 +1,63 @@
+esphome:
+  name: espnow-gateway-test
+  friendly_name: ESPNOW Gateway test
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "+j89kC3gVAlEGW2yriNBy7o/zKzv1wC1wSG4iwazOTA="
+
+ota:
+  - platform: esphome
+    password: "e15e3f7376c16253188f1e8a45b74eb3"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Espnow-Gateway-Test"
+    password: "J4viLcG9bUmb"
+
+captive_portal:
+
+espnow:
+  id: espnow_component
+  auto_add_peer: true 
+
+  on_broadcast:
+    - logger.log:
+        format: "BROADCAST - Sent to %s from %s: %s RSSI: %ddBm"
+        args:
+          - format_mac_address_pretty(info.des_addr).c_str()
+          - format_mac_address_pretty(info.src_addr).c_str()
+          - format_hex_pretty(data, size).c_str()
+          - info.rx_ctrl->rssi
+
+  on_unknown_peer:
+    - logger.log:
+        format: "UNKNOWN Peer !! Sent to %s from %s: %s RSSI: %ddBm"
+        args:
+          - format_mac_address_pretty(info.des_addr).c_str()
+          - format_mac_address_pretty(info.src_addr).c_str()
+          - format_hex_pretty(data, size).c_str()
+          - info.rx_ctrl->rssi
+
+  on_receive:
+    - logger.log:
+        format: "Received - Sent to %s from %s: %s RSSI: %ddBm"
+        args:
+          - format_mac_address_pretty(info.des_addr).c_str()
+          - format_mac_address_pretty(info.src_addr).c_str()
+          - format_hex_pretty(data, size).c_str()
+          - info.rx_ctrl->rssi
+    
