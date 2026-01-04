@@ -29,7 +29,7 @@ char senderID[11] = "ESPNow-tst";
 
 typedef struct sensorData {
   char senderID[11];
-  char type = 1;    // Type of payload
+  int type = 1;    // Type of payload
   float temp;       // Temp
   float humi;       // Humitity
   int pres;         // Preassure in mBar

@@ -13,11 +13,11 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: "+j89kC3gVAlEGW2yriNBy7o/zKzv1wC1wSG4iwazOTA="
+    key: !secret api_key
 
 ota:
   - platform: esphome
-    password: "e15e3f7376c16253188f1e8a45b74eb3"
+    password: !secret ota_password
 
 wifi:
   ssid: !secret wifi_ssid
@@ -28,11 +28,35 @@ wifi:
     ssid: "Espnow-Gateway-Test"
     password: "J4viLcG9bUmb"
 
-captive_portal:
+#ESPNow - section from here 
+sensor:
+  - platform: template
+    name: "ESPNow Temperature"
+    id: espnow_temp
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+  - platform: template
+    name: "ESPNow Humidity"
+    id: espnow_hum
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "ESPNow Pressure"
+    id: espnow_pres
+    unit_of_measurement: "hPa"
+    accuracy_decimals: 0
+  - platform: template
+    name: "ESPNow Battery"
+    id: espnow_batt
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
 
+#ESPNow stuff
 espnow:
   id: espnow_component
   auto_add_peer: true 
+  peers:                   # Optional
+    - "34:85:18:00:2D:E4"  # altan-sensor-1 mac address
 
   on_broadcast:
     - logger.log:
@@ -53,11 +77,49 @@ espnow:
           - info.rx_ctrl->rssi
 
   on_receive:
-    - logger.log:
-        format: "Received - Sent to %s from %s: %s RSSI: %ddBm"
-        args:
-          - format_mac_address_pretty(info.des_addr).c_str()
-          - format_mac_address_pretty(info.src_addr).c_str()
-          - format_hex_pretty(data, size).c_str()
-          - info.rx_ctrl->rssi
+    - lambda: |-
+        ESP_LOGD("espnow", "Received %d bytes from %s", size, format_hex_pretty(info.src_addr, 6).c_str());
+        std::string hex_data = format_hex_pretty(data, size).c_str();
+        ESP_LOGD("espnow", "Raw data: %s", hex_data.c_str());
+
+        // Define the struct to match your sender
+        struct sensorData {
+          char senderID[11];
+          int type;
+          float temp;
+          float humi;
+          int pres;
+          int batt;
+        };
+        
+        // Check if we received enough data
+        if (size >= sizeof(sensorData)) {
+          sensorData receivedData;
+          memcpy(&receivedData, data, sizeof(sensorData));
+          
+          // Null-terminate the senderID to be safe
+          receivedData.senderID[10] = '\0';
+          
+          // Log the received data
+          ESP_LOGD("espnow", "Sender ID: %s", receivedData.senderID);
+          ESP_LOGD("espnow", "Type: %d", receivedData.type);
+          ESP_LOGD("espnow", "Temp: %.1f°C", receivedData.temp);
+          ESP_LOGD("espnow", "Humidity: %.1f%%", receivedData.humi);
+          ESP_LOGD("espnow", "Pressure: %d mBar", receivedData.pres);
+          ESP_LOGD("espnow", "Battery: %d%%", receivedData.batt);
+
+          // Publish to sensors
+          //TODO: Condition if more than one Sensor this pict the right one 
+          id(espnow_temp).publish_state(receivedData.temp);
+          id(espnow_hum).publish_state(receivedData.humi);
+          id(espnow_pres).publish_state(receivedData.pres);
+          id(espnow_batt).publish_state(receivedData.batt);
+        } else {
+          ESP_LOGW("espnow", "Received data too small: %d bytes", size);
+        }
+         
+
+
+
+
     
