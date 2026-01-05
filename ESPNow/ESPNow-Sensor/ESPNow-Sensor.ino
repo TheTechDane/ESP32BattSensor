@@ -24,10 +24,12 @@
 #include <logger.h>
 
 //IMPORTANT to set the right MAC address of the reciving gateway..
-uint8_t broadcastAddress[] = {0x34, 0x85, 0x18, 0x00, 0x2D, 0xE4};
-// Broadcast -- uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+//uint8_t broadcastAddress[] = {0x34, 0x85, 0x18, 0x00, 0x2D, 0xE4};
+uint8_t broadcastAddress[] = {0x64, 0xE8, 0x33, 0x84, 0x63, 0x90};
+//uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};      //BROADCAST Address
 char senderID[11] = "ESPNow-001";
 #define ESPNowChannal 1
+#define EXTERNAL_ANTENNA true
 
 #define BATT_EMPTY 2.90
 #define BATT_FULL 4.02
@@ -86,7 +88,8 @@ void doMeasurement() {
   Wire.beginTransmission(BME280_ADDR);
   int error = Wire.endTransmission();
   if (error == 0) {
-      Serial.printf("I2C device found at address 0x%02X\n", BME280_ADDR);
+      logD("I2C device found at address:");
+      loglnD(BME280_ADDR);
   }
 
   bool status = bme.begin(BME280_ADDR);
@@ -96,6 +99,7 @@ void doMeasurement() {
   } else {
     loglnD("BME280 Sensor Initialized:");
   }
+  delay(150);    //Seddle the Sensor
 
   sensorData mySensorData;                      // The Sensor data sending
   strncpy(mySensorData.senderID, senderID, sizeof(senderID));
@@ -140,7 +144,7 @@ void setup() {
   Serial.println("Current log level is :" + String(LOGLEVEL));
   loglnV("Starting");
  
-   //
+  //
   // Check Reboot reason
   //
   int iBootReason = esp_reset_reason();               // but I still can use and find the ummerical value
@@ -161,8 +165,15 @@ void setup() {
   
   // Configure the wake up source and set to wake up every xx secunds
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
- 
- 
+
+  if (EXTERNAL_ANTENNA) {
+    loglnI("Using External antenna");
+    pinMode(3, OUTPUT);    // RF switch power on
+    digitalWrite(3, LOW);
+    pinMode(14, OUTPUT);   // select external antenna
+    digitalWrite(14, HIGH); 
+  }
+  
   pinMode(LED_BUILTIN, OUTPUT);
   WiFi.mode(WIFI_STA);   //Use special ESPNow Mode
   
@@ -236,9 +247,7 @@ void OnDataSent(uint8_t *mac, esp_now_send_status_t status) {
   TODO : Filter the data if it is for "me"
 *******************************************************************************/
 void OnDataRecv(uint8_t * mac, uint8_t * data, uint8_t len) {
-
 }
-
 
 float getBatteryVoltage() {
   uint32_t Vbatt = 0;
