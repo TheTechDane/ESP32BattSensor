@@ -41,8 +41,8 @@ char senderID[11] = "ESPNow-001";
 #define USER_LED LED_BUILTIN
 #define nrBattSamples 5            //Battery meassurement - Was 16 to start with
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-//#define TIME_TO_SLEEP  115         /* Sleep for 115s will + 5s delay for establishing connection => data reported every 2 minutes */
-#define TIME_TO_SLEEP  20         /* Sleep for 20s for testing */
+#define TIME_TO_SLEEP  115         /* Sleep for 115s will + 5s delay for establishing connection => data reported every 2 minutes */
+//#define TIME_TO_SLEEP  20         /* Sleep for 20s for testing */
 #define RESET_DELAY 10            /* If reset was pressed wait 10 sec, if it was for programming */
 
 typedef struct sensorData {
@@ -79,38 +79,24 @@ void readMacAddress(){
 
 /******************************************************************
 *
-*  Do the Actual Measurement 
+*  Do the Actual Measurement and send it to the gateway.
 *
 ******************************************************************/
 void doMeasurement() {
-  //IC2 - Initiate
-  Wire.begin();
-  Wire.beginTransmission(BME280_ADDR);
-  int error = Wire.endTransmission();
-  if (error == 0) {
-      logD("I2C device found at address:");
-      loglnD(BME280_ADDR);
-  }
-
-  bool status = bme.begin(BME280_ADDR);
-  if (!status) {
-    loglnD("Could not find a valid BME280 sensor, check wiring!");
-    //while (1);
-  } else {
-    loglnD("BME280 Sensor Initialized:");
-  }
-  delay(150);    //Seddle the Sensor
-
   sensorData mySensorData;                      // The Sensor data sending
-  strncpy(mySensorData.senderID, senderID, sizeof(senderID));
-  mySensorData.temp = bme.readTemperature();    // Measure temperature sensor value
-  mySensorData.humi = bme.readHumidity();          // Messure humidity value
-  mySensorData.pres = round(bme.readPressure() / 100.0F); // Convert Pa to hPa
-  mySensorData.batt = getCurrentBatteryPercent();
+  //For loop for testing the reads - Should only be one.
+  for (int i=0; i<1;i++) {
+      delay(150);    //MAke sure Sensor is ready
+      strncpy(mySensorData.senderID, senderID, sizeof(senderID));
+      mySensorData.temp = bme.readTemperature();    // Measure temperature sensor value
+      mySensorData.humi = bme.readHumidity();          // Messure humidity value
+      mySensorData.pres = round(bme.readPressure() / 100.0F); // Convert Pa to hPa
+      mySensorData.batt = getCurrentBatteryPercent();
 
-  char sFormatted[100];
-  sprintf(sFormatted,"Meausured Temp:%1f Humitity:%1f Preassure:%d Batt:%d", mySensorData.temp, mySensorData.humi, mySensorData.pres, mySensorData.batt);
-  loglnD(sFormatted);
+      char sFormatted[100];
+      sprintf(sFormatted,"Meausured Temp:%1f Humitity:%1f Preassure:%d Batt:%d", mySensorData.temp, mySensorData.humi, mySensorData.pres, mySensorData.batt);
+      loglnD(sFormatted);
+  }
 
   //Send
   esp_now_send(broadcastAddress, (uint8_t *) &mySensorData, sizeof(mySensorData));
@@ -166,6 +152,23 @@ void setup() {
   // Configure the wake up source and set to wake up every xx secunds
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
 
+  //IC2 - Initiate  -- This originally sat in the DoMessurement function but was mowed as it does not make a differance when DeepSleeping
+  Wire.begin();
+  Wire.beginTransmission(BME280_ADDR);
+  int error = Wire.endTransmission();
+  if (error == 0) {
+      logD("I2C device found at address:");
+      loglnD(BME280_ADDR);
+  }
+  bool status = bme.begin(BME280_ADDR);
+  if (!status) {
+    loglnD("Could not find a valid BME280 sensor, check wiring!");
+    //while (1);
+  } else {
+    loglnD("BME280 Sensor Initialized:");
+  }
+
+  //Select the right WiFi Antenna
   if (EXTERNAL_ANTENNA) {
     loglnI("Using External antenna");
     pinMode(3, OUTPUT);    // RF switch power on
@@ -197,7 +200,6 @@ void setup() {
   }
   esp_now_register_send_cb(esp_now_send_cb_t(OnDataSent));
   //esp_now_register_recv_cb(OnDataRecv);
-  
 }
 
 /******************************* LOOP ************************/
@@ -206,7 +208,9 @@ void loop() {
   if (wasResetRestart) {
     //Check if reset was pressed - and time has been passed
     if ((millis() - rebootTime) < (RESET_DELAY * 1000)) {
-      blinkLED(1000);
+      blinkLEDOnce();
+      doMeasurement();  //Might as well send meassurement when we wait roe the reboot periode (For programming etc.)
+      delay(1000);
     } else {
       wasResetRestart = false;
     }

@@ -11,11 +11,11 @@ There is 3 software versions:
 
 The reason for the 3 projects are to test range and battery usage. The are all based on the same Battery Sensor:
 
+
+
 For details see bellow on the Hardware section.
 
 The general result is that .........
-
-
 
 
 ## Hardware
