@@ -28,7 +28,7 @@
 uint8_t broadcastAddress[] = {0x64, 0xE8, 0x33, 0x84, 0x63, 0x90};
 //uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};      //BROADCAST Address
 char senderID[11] = "ESPNow-001";
-#define ESPNowChannal 1
+#define ESPNowChannal 11
 #define EXTERNAL_ANTENNA true
 
 #define BATT_EMPTY 2.90
@@ -179,7 +179,8 @@ void setup() {
   
   pinMode(LED_BUILTIN, OUTPUT);
   WiFi.mode(WIFI_STA);   //Use special ESPNow Mode
-  
+  WiFi.setChannel(ESPNowChannal);
+
   //Start ESPNow
   if (esp_now_init() != ESP_OK) {
     loglnE("ESPNOW FAILED TO START!");
