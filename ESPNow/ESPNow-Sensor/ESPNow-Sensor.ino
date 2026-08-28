@@ -3,7 +3,7 @@
     Date: 2026 - January
     Authoe: TheTechDane aka - Kim Rasmussen
     Version: */ 
-#define VER "0.0.1"
+#define VER "0.0.2"
 /*
     This is a Simple Sensor to broadcast Temp, Humitity and Preassure
     This is the first version aimed to be as simple as possiable to transfer data to HomeAssistanc over a ESPHome gateway
@@ -31,8 +31,8 @@ char senderID[11] = "ESPNow-001";
 #define ESPNowChannal 11
 #define EXTERNAL_ANTENNA true
 
-#define BATT_EMPTY 2.90
-#define BATT_FULL 4.02
+#define BATT_EMPTY 2.5
+#define BATT_FULL 4.20
 #define BATT_PIN A0
 #define SDA_PIN D4
 #define SCL_PIN D5
@@ -52,6 +52,7 @@ typedef struct sensorData {
   float humi;       // Humitity
   int pres;         // Preassure in mBar
   int batt;         // Battery Presentage
+  float battVoltage; //batteryVoltage
 } sensorData;
 
 esp_now_peer_info_t peerInfo;         // For the payload that returns, and the peer registration.
@@ -92,9 +93,10 @@ void doMeasurement() {
       mySensorData.humi = bme.readHumidity();          // Messure humidity value
       mySensorData.pres = round(bme.readPressure() / 100.0F); // Convert Pa to hPa
       mySensorData.batt = getCurrentBatteryPercent();
+      mySensorData.battVoltage = getBatteryVoltage();
 
       char sFormatted[100];
-      sprintf(sFormatted,"Meausured Temp:%1f Humitity:%1f Preassure:%d Batt:%d", mySensorData.temp, mySensorData.humi, mySensorData.pres, mySensorData.batt);
+      sprintf(sFormatted,"Meausured Temp:%1f Humitity:%1f Preassure:%d Batt:%d BattVolt:%f", mySensorData.temp, mySensorData.humi, mySensorData.pres, mySensorData.batt, mySensorData.battVoltage);
       loglnD(sFormatted);
   }
 
