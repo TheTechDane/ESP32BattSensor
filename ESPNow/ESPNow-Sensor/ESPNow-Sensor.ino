@@ -1,299 +1,344 @@
 /*
-    Name: ESPNow Sensor
-    Date: 2026 - January
-    Authoe: TheTechDane aka - Kim Rasmussen
-    Version: */ 
-#define VER "0.0.2"
-/*
-    This is a Simple Sensor to broadcast Temp, Humitity and Preassure
-    This is the first version aimed to be as simple as possiable to transfer data to HomeAssistanc over a ESPHome gateway
-
-    For now It will send the data 
-    And if anything is recieved just log it on the serial port
-
-    Later this will be the foundation for a battery powered sencor with DeepSleep to save battery
-
-    Helpfull links: https://randomnerdtutorials.com/esp-now-esp32-arduino-ide/
-
+    Name:    ESPNow Sensor (BME280 + Battery + Auto-Channel + USB Debug)
+    Date:    2026 - November
+    Author:  TheTechDane aka - Kim Rasmussen
+    Version: 0.3.0
+    Board:   Seeed Studio XIAO ESP32-C6
+             (Ensure Tools -> USB CDC On Boot -> Enabled)
 */
+#define VER "0.3.0"
+
+#include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
-#include "ESP32_NOW.h"
-#include "WiFi.h"
+#include <esp_now.h>
+#include <WiFi.h>
+#include <esp_mac.h>
+#include "driver/usb_serial_jtag.h"
+
 #define LOGLEVEL LOGLEVEL_DEBUGING
 #include <logger.h>
 
-//IMPORTANT to set the right MAC address of the reciving gateway..
-//uint8_t broadcastAddress[] = {0x34, 0x85, 0x18, 0x00, 0x2D, 0xE4};
+// =========================================================================
+// CONFIGURATION
+// =========================================================================
 uint8_t broadcastAddress[] = {0x64, 0xE8, 0x33, 0x84, 0x63, 0x90};
-//uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};      //BROADCAST Address
-char senderID[11] = "ESPNow-001";
-#define ESPNowChannal 11
-#define EXTERNAL_ANTENNA true
+const char senderID[11] = "ESPNow-001";
 
-#define BATT_EMPTY 2.5
-#define BATT_FULL 4.20
-#define BATT_PIN A0
-#define SDA_PIN D4
-#define SCL_PIN D5
-#define BME280_ADDR 0x76
-#define button BOOT_PIN            //The factory reste pin.
-#define USER_LED LED_BUILTIN
-#define nrBattSamples 5            //Battery meassurement - Was 16 to start with
-#define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP  115         /* Sleep for 115s will + 5s delay for establishing connection => data reported every 2 minutes */
-//#define TIME_TO_SLEEP  20         /* Sleep for 20s for testing */
-#define RESET_DELAY 10            /* If reset was pressed wait 10 sec, if it was for programming */
+#define DEFAULT_CHANNEL   11
+#define EXTERNAL_ANTENNA  true
 
+// Hardware Pins (XIAO ESP32-C6)
+#define BATT_PIN          A0
+#define SDA_PIN           D4
+#define SCL_PIN           D5
+#define BME280_ADDR       0x76
+#define USER_LED          LED_BUILTIN
+
+// Battery Calibration (Single-cell LiPo)
+#define BATT_EMPTY        3.30f
+#define BATT_FULL         4.20f
+#define NR_BATT_SAMPLES   5
+
+// Timing & Sleep Settings
+#define uS_TO_S_FACTOR        1000000ULL
+#define TIME_TO_SLEEP         119       // ~2 minute total cycle on battery
+#define USB_AWAKE_WINDOW_MS   60000UL   // Stay awake 60s when USB is connected
+#define BATT_RESET_WINDOW_MS  5000UL    // Brief 5s window on battery cold boot/reset
+
+// =========================================================================
+// DATA STRUCTURES & GLOBALS
+// =========================================================================
 typedef struct sensorData {
   char senderID[11];
-  int type = 1;    // Type of payload
-  float temp;       // Temp
-  float humi;       // Humitity
-  int pres;         // Preassure in mBar
-  int batt;         // Battery Presentage
-  float battVoltage; //batteryVoltage
+  int32_t type = 1;       // Payload type
+  float temp;             // Temperature (°C)
+  float humi;             // Humidity (%)
+  int32_t pres;           // Pressure (hPa / mBar)
+  int32_t batt;           // Battery percentage (0-100%)
+  float battVoltage;      // Battery voltage (V)
 } sensorData;
 
-esp_now_peer_info_t peerInfo;         // For the payload that returns, and the peer registration.
-long t = 0;
-Adafruit_BME280 bme; // I2C
-// A variable to hold the reset cause flags
-bool wasResetRestart = false;
-int rebootTime = 0;
-bool readyToSleep = false;
+// Persists in RTC slow memory across Deep Sleep wakes (resets only on power loss)
+RTC_DATA_ATTR uint8_t cachedChannel = DEFAULT_CHANNEL;
 
-void readMacAddress(){
+esp_now_peer_info_t peerInfo;
+Adafruit_BME280 bme;
+bool bmeAvailable = false;
+
+unsigned long awakeUntil = 0;
+bool usbDebugActive = false;
+volatile bool readyToSleep = false;
+volatile int lastSendStatus = -1; // -1 = waiting, 0 = ACK OK, 1 = NO ACK
+
+// =========================================================================
+// HELPER FUNCTIONS
+// =========================================================================
+bool isUsbConnected() {
+  return usb_serial_jtag_is_connected() || (bool)Serial;
+}
+
+void blinkLEDOnce(int iBlinkDelay = 100) {
+  digitalWrite(USER_LED, LOW);  // LED ON (active LOW on XIAO)
+  delay(iBlinkDelay);
+  digitalWrite(USER_LED, HIGH); // LED OFF
+  delay(iBlinkDelay);
+}
+
+void printMacAddress() {
   uint8_t baseMac[6];
-  char cFormattedMac[21];
-  esp_err_t ret = esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
-  if (ret == ESP_OK) {
-    sprintf(cFormattedMac,"%02x:%02x:%02x:%02x:%02x:%02x\n",
-      baseMac[0], baseMac[1], baseMac[2],
-      baseMac[3], baseMac[4], baseMac[5]);
+  if (esp_read_mac(baseMac, ESP_MAC_WIFI_STA) == ESP_OK) {
+    char cFormattedMac[24];
+    snprintf(cFormattedMac, sizeof(cFormattedMac), "%02X:%02X:%02X:%02X:%02X:%02X",
+             baseMac[0], baseMac[1], baseMac[2],
+             baseMac[3], baseMac[4], baseMac[5]);
+    logD("Sender STA MAC: ");
+    loglnD(cFormattedMac);
   } else {
-    loglnE("Error getting MAC address!!");
+    loglnE("Error getting MAC address!");
   }
-  logD("MAC Address:");
-  loglnD(cFormattedMac);
-}
-
-/******************************************************************
-*
-*  Do the Actual Measurement and send it to the gateway.
-*
-******************************************************************/
-void doMeasurement() {
-  sensorData mySensorData;                      // The Sensor data sending
-  //For loop for testing the reads - Should only be one.
-  for (int i=0; i<1;i++) {
-      delay(150);    //MAke sure Sensor is ready
-      strncpy(mySensorData.senderID, senderID, sizeof(senderID));
-      mySensorData.temp = bme.readTemperature();    // Measure temperature sensor value
-      mySensorData.humi = bme.readHumidity();          // Messure humidity value
-      mySensorData.pres = round(bme.readPressure() / 100.0F); // Convert Pa to hPa
-      mySensorData.batt = getCurrentBatteryPercent();
-      mySensorData.battVoltage = getBatteryVoltage();
-
-      char sFormatted[100];
-      sprintf(sFormatted,"Meausured Temp:%1f Humitity:%1f Preassure:%d Batt:%d BattVolt:%f", mySensorData.temp, mySensorData.humi, mySensorData.pres, mySensorData.batt, mySensorData.battVoltage);
-      loglnD(sFormatted);
-  }
-
-  //Send
-  esp_now_send(broadcastAddress, (uint8_t *) &mySensorData, sizeof(mySensorData));
-}
-
-void gotoSleep() {
-  //Put Sensor to sleep
-  BME280_Sleep(BME280_ADDR);
-  // Put device to deep sleep
-  loglnI("Going to sleep now");
-  esp_deep_sleep_start();
-}
-
-void blinkLEDOnce(int iBlinkDelay = 300) {
-    digitalWrite(USER_LED, LOW);  // turn the LED on 
-    delay(iBlinkDelay);                      
-    loglnD("Blink..");  
-    digitalWrite(USER_LED, HIGH);   // turn the LED off 
-    delay(iBlinkDelay);   
-}
-
-void blinkLED(int iBlinkDelay = 300) {
-    for (int i=0; i<3; i++) {
-      blinkLEDOnce(iBlinkDelay);
-  }
-}
-
-/********************* SETUP **************************/
-void setup() {
-  Serial.begin(115200);
-  Serial.println("Current log level is :" + String(LOGLEVEL));
-  loglnV("Starting");
- 
-  //
-  // Check Reboot reason
-  //
-  int iBootReason = esp_reset_reason();               // but I still can use and find the ummerical value
-  logD("Reset/Boot Reason was: "); loglnD( iBootReason );
-  if ( iBootReason == ESP_RST_POWERON ) {             // Reset due to power-on event.
-    logD("Reboot was because of Power-On!!  - Waiting ");
-    logD(RESET_DELAY);
-    loglnD(" Sec.");
-    wasResetRestart = true;
-  }
-  if ( iBootReason == ESP_RST_DEEPSLEEP) {                  // Reset due to power-on event.
-    loglnD("Reboot was because of DeepSleep!!");
-  }
-  if ( iBootReason == ESP_RST_EXT ) {                  // Reset due to power-on event.
-    loglnD("Reboot was because of External reset!!");
-  }
-  rebootTime = millis();
-  
-  // Configure the wake up source and set to wake up every xx secunds
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-
-  //IC2 - Initiate  -- This originally sat in the DoMessurement function but was mowed as it does not make a differance when DeepSleeping
-  Wire.begin();
-  Wire.beginTransmission(BME280_ADDR);
-  int error = Wire.endTransmission();
-  if (error == 0) {
-      logD("I2C device found at address:");
-      loglnD(BME280_ADDR);
-  }
-  bool status = bme.begin(BME280_ADDR);
-  if (!status) {
-    loglnD("Could not find a valid BME280 sensor, check wiring!");
-    //while (1);
-  } else {
-    loglnD("BME280 Sensor Initialized:");
-  }
-
-  //Select the right WiFi Antenna
-  if (EXTERNAL_ANTENNA) {
-    loglnI("Using External antenna");
-    pinMode(3, OUTPUT);    // RF switch power on
-    digitalWrite(3, LOW);
-    pinMode(14, OUTPUT);   // select external antenna
-    digitalWrite(14, HIGH); 
-  }
-  
-  pinMode(LED_BUILTIN, OUTPUT);
-  WiFi.mode(WIFI_STA);   //Use special ESPNow Mode
-  WiFi.setChannel(ESPNowChannal);
-
-  //Start ESPNow
-  if (esp_now_init() != ESP_OK) {
-    loglnE("ESPNOW FAILED TO START!");
-    readMacAddress();
-    return;
-  }else{
-     loglnI("ESPNOW started!");
-  }
-  // Register peer
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = ESPNowChannal;  
-  peerInfo.encrypt = false;
-  
-  // Add peer        
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    loglnE("ESPNOW FAILED TO to add peer");
-    return;
-  }
-  esp_now_register_send_cb(esp_now_send_cb_t(OnDataSent));
-  //esp_now_register_recv_cb(OnDataRecv);
-}
-
-/******************************* LOOP ************************/
-void loop() {
-  // put your main code here, to run repeatedly:
-  if (wasResetRestart) {
-    //Check if reset was pressed - and time has been passed
-    if ((millis() - rebootTime) < (RESET_DELAY * 1000)) {
-      blinkLEDOnce();
-      doMeasurement();  //Might as well send meassurement when we wait roe the reboot periode (For programming etc.)
-      delay(1000);
-    } else {
-      wasResetRestart = false;
-    }
-  } else {
-    // Call the function to measure temperature and put the device to sleep
-    blinkLEDOnce();
-    doMeasurement();
-    delay(100);    //To ensure Send
-    gotoSleep();
-  }
-}
-
-/******************************************************************************
-  OnDataSend callback
-  Status if data was send correctly
-*******************************************************************************/
-void OnDataSent(uint8_t *mac, esp_now_send_status_t status) {
-  char cFormattedMac[21];
-  sprintf(cFormattedMac,"%02x:%02x:%02x:%02x:%02x:%02x\n",mac[0], mac[1], mac[2],mac[3],mac[4],mac[5]);
-  logD("Sent to MAC Address:");
-  loglnD(cFormattedMac);
-  logI("Send status:");
-  loglnI(status);
-
-  readyToSleep = true;
-
-   if(status == ESP_NOW_SEND_SUCCESS) {   //Not sure why I get a 1 and it does send !! ?? !!
-     loglnI("Send Successfull!");
-   }
-   else {
-     loglnE("SEND Failed!");
-   }
-}
-
-/******************************************************************************
-  OnRecieve call back
-
-  TODO : Filter the data if it is for "me"
-*******************************************************************************/
-void OnDataRecv(uint8_t * mac, uint8_t * data, uint8_t len) {
 }
 
 float getBatteryVoltage() {
   uint32_t Vbatt = 0;
-  for(int i = 0; i < nrBattSamples; i++) {
-    Vbatt = Vbatt + analogReadMilliVolts(BATT_PIN); // ADC with correction   
+  for (int i = 0; i < NR_BATT_SAMPLES; i++) {
+    Vbatt += analogReadMilliVolts(BATT_PIN);
   }
-  float Vbattf = 2* Vbatt / nrBattSamples / 1000.0;     // attenuation ratio 1/2, mV --> V
-  return Vbattf;
+  return (2.0f * Vbatt) / NR_BATT_SAMPLES / 1000.0f;
 }
 
-int getCurrentBatteryPercent() {
-  float Vbattf = getBatteryVoltage();
-  logD("Battery Voltage: ");
-  logD(Vbattf);
-
-  // Calculate the voltage range
-  float voltageRange = BATT_FULL - BATT_EMPTY;
-  // Calculate the battery percentage
-  int battPercent = 0;
-  if ((Vbattf - BATT_EMPTY) > 0.0) battPercent = ((Vbattf - BATT_EMPTY) / voltageRange) * 100.0;
-
-  logD(" Battery Percentage: ");
-  loglnD(battPercent);
-
-  return battPercent;
+int getCurrentBatteryPercent(float Vbattf) {
+  if (Vbattf <= BATT_EMPTY) return 0;
+  if (Vbattf >= BATT_FULL) return 100;
+  return round(((Vbattf - BATT_EMPTY) / (BATT_FULL - BATT_EMPTY)) * 100.0f);
 }
 
-void BME280_Sleep(int device_address) {
-  // FROM: https://github.com/G6EJD/BME280-Sleep-and-Address-change/blob/master/BME280_Sleep.ino
-  //
-  // BME280 Register 0xF4 (control measurement register) sets the device mode, specifically bits 1,0
-  // The bit positions are called 'mode[1:0]'. See datasheet Table 25 and Paragraph 3.3 for more detail.
-  // Mode[1:0]  Mode
-  //    00      'Sleep'  mode
-  //  01 / 10   'Forced' mode, use either '01' or '10'
-  //    11      'Normal' mode
-  loglnI("BME280 to Sleep mode...");
-  Wire.beginTransmission(device_address);
-  Wire.write((uint8_t)0xF4);       // Select Control Measurement Register
-  Wire.write((uint8_t)0b00000000); // Send '00' for Sleep mode
-  Wire.endTransmission();
+// =========================================================================
+// ESP-NOW CHANNEL & CALLBACKS
+// =========================================================================
+void setEspNowChannel(uint8_t ch) {
+  WiFi.setChannel(ch);
+  memset(&peerInfo, 0, sizeof(peerInfo));
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = ch;
+  peerInfo.encrypt = false;
+
+  if (esp_now_is_peer_exist(broadcastAddress)) {
+    esp_now_mod_peer(&peerInfo);
+  } else {
+    esp_now_add_peer(&peerInfo);
+  }
+}
+
+uint8_t autoDetectGatewayChannel() {
+  if (usbDebugActive) Serial.println("[SCAN] Sweeping ESP-NOW channels 1-13 for Gateway ACK...");
+  uint8_t pingByte = 0x00; // 1-byte probe (ignored by struct size check on gateway)
+
+  for (uint8_t ch = 1; ch <= 13; ch++) {
+    setEspNowChannel(ch);
+    lastSendStatus = -1;
+    esp_now_send(broadcastAddress, &pingByte, sizeof(pingByte));
+
+    unsigned long start = millis();
+    while (lastSendStatus == -1 && (millis() - start < 15)) {
+      delay(1);
+    }
+
+    if (lastSendStatus == 0) { // Gateway hardware returned 802.11 ACK!
+      cachedChannel = ch;
+      if (usbDebugActive) Serial.printf("[SCAN] Found Gateway on Channel %d!\n", ch);
+      return ch;
+    }
+  }
+
+  // Restore previous cached channel if nothing answered
+  setEspNowChannel(cachedChannel);
+  if (usbDebugActive) Serial.println("[SCAN] No Gateway found on channels 1-13.");
+  return 0;
+}
+
+void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+  lastSendStatus = (status == ESP_NOW_SEND_SUCCESS) ? 0 : 1;
+  readyToSleep = true;
+}
+
+void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
+  if (usbDebugActive) {
+    Serial.printf("[RECV] %d bytes from %02X:%02X:%02X:%02X:%02X:%02X\n", len,
+                  recv_info->src_addr[0], recv_info->src_addr[1], recv_info->src_addr[2],
+                  recv_info->src_addr[3], recv_info->src_addr[4], recv_info->src_addr[5]);
+  }
+}
+
+// =========================================================================
+// MEASUREMENT & SLEEP
+// =========================================================================
+void transmitSensorData(const sensorData &payload) {
+  readyToSleep = false;
+  lastSendStatus = -1;
+  esp_err_t result = esp_now_send(broadcastAddress, (const uint8_t *)&payload, sizeof(payload));
+
+  if (result != ESP_OK) {
+    loglnE("esp_now_send() queueing failed!");
+    readyToSleep = true;
+    lastSendStatus = 1;
+    return;
+  }
+
+  unsigned long txStart = millis();
+  while (!readyToSleep && (millis() - txStart < 50)) {
+    delay(1);
+  }
+}
+
+void doMeasurement() {
+  sensorData mySensorData;
+  strncpy(mySensorData.senderID, senderID, sizeof(mySensorData.senderID));
+  mySensorData.senderID[sizeof(mySensorData.senderID) - 1] = '\0';
+
+  if (bmeAvailable && bme.takeForcedMeasurement()) {
+    mySensorData.temp = bme.readTemperature();
+    mySensorData.humi = bme.readHumidity();
+    mySensorData.pres = round(bme.readPressure() / 100.0F);
+  } else {
+    mySensorData.temp = NAN;
+    mySensorData.humi = NAN;
+    mySensorData.pres = 0;
+    loglnE("BME280 read failed or sensor missing!");
+  }
+
+  mySensorData.battVoltage = getBatteryVoltage();
+  mySensorData.batt = getCurrentBatteryPercent(mySensorData.battVoltage);
+
+  char sFormatted[128];
+  snprintf(sFormatted, sizeof(sFormatted),
+           "Measured -> Temp: %.1fC | Humi: %.1f%% | Pres: %dhPa | Batt: %d%% (%.2fV)",
+           mySensorData.temp, mySensorData.humi, mySensorData.pres,
+           mySensorData.batt, mySensorData.battVoltage);
+  loglnD(sFormatted);
+
+  // 1. Send on cachedChannel first (0ms scan overhead during normal operation)
+  transmitSensorData(mySensorData);
+
+  // 2. If no ACK came back, gateway likely switched channels -> auto-detect & retry once
+  if (lastSendStatus != 0) {
+    if (usbDebugActive) Serial.printf("[WARN] No ACK on Ch %d -> running channel sweep...\n", cachedChannel);
+    if (autoDetectGatewayChannel() > 0) {
+      transmitSensorData(mySensorData);
+    }
+  }
+}
+
+void gotoSleep() {
+  loglnI("Entering Deep Sleep...");
+  if (usbDebugActive) {
+    Serial.flush();
+  }
+  esp_deep_sleep_start();
+}
+
+// =========================================================================
+// SETUP
+// =========================================================================
+void setup() {
+  Serial.begin(115200);
+  pinMode(USER_LED, OUTPUT);
+  digitalWrite(USER_LED, HIGH); // LED OFF
+
+  delay(200); // Brief settle time for USB SOF detection
+
+  esp_reset_reason_t iBootReason = esp_reset_reason();
+
+  if (isUsbConnected()) {
+    usbDebugActive = true;
+    awakeUntil = millis() + USB_AWAKE_WINDOW_MS;
+    delay(1500);
+    Serial.println("\n==========================================");
+    Serial.printf(" ESPNow Sensor v%s [USB DEBUG MODE]\n", VER);
+    Serial.println(" Staying awake for 60s before Deep Sleep");
+    Serial.println("==========================================");
+  } else if (iBootReason == ESP_RST_POWERON || iBootReason == ESP_RST_EXT) {
+    awakeUntil = millis() + BATT_RESET_WINDOW_MS;
+  } else {
+    awakeUntil = 0; // Normal Deep Sleep wake on battery
+  }
+
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+
+  // Configure XIAO ESP32-C6 RF Switch before initializing radio
+  if (EXTERNAL_ANTENNA) {
+    pinMode(3, OUTPUT);
+    digitalWrite(3, LOW);  // RF switch power ON
+    pinMode(14, OUTPUT);
+    digitalWrite(14, HIGH); // Select external u.FL antenna
+  }
+
+  // Initialize I2C and BME280 in Forced Mode
+  Wire.begin(SDA_PIN, SCL_PIN);
+  if (!bme.begin(BME280_ADDR, &Wire)) {
+    loglnE("Could not find a valid BME280 sensor at 0x76!");
+    bmeAvailable = false;
+  } else {
+    bmeAvailable = true;
+    bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                    Adafruit_BME280::SAMPLING_X1,
+                    Adafruit_BME280::SAMPLING_X1,
+                    Adafruit_BME280::SAMPLING_X1,
+                    Adafruit_BME280::FILTER_OFF);
+  }
+
+  // Initialize radio in STA mode (pure ESP-NOW, no Wi-Fi AP connection)
+  WiFi.mode(WIFI_STA);
+
+  if (usbDebugActive) {
+    printMacAddress();
+    Serial.printf("Target Gateway: %02X:%02X:%02X:%02X:%02X:%02X | Cached Ch: %d\n\n",
+                  broadcastAddress[0], broadcastAddress[1], broadcastAddress[2],
+                  broadcastAddress[3], broadcastAddress[4], broadcastAddress[5],
+                  cachedChannel);
+  }
+
+  if (esp_now_init() != ESP_OK) {
+    loglnE("ESP-NOW init failed!");
+    gotoSleep();
+  }
+
+  esp_now_register_send_cb(OnDataSent);
+  esp_now_register_recv_cb(OnDataRecv);
+
+  // Lock radio and peer to cachedChannel
+  setEspNowChannel(cachedChannel);
+}
+
+// =========================================================================
+// MAIN LOOP
+// =========================================================================
+void loop() {
+  if (!usbDebugActive && isUsbConnected()) {
+    usbDebugActive = true;
+    awakeUntil = millis() + USB_AWAKE_WINDOW_MS;
+    Serial.println("\n[USB CONNECTED] Extending awake window to 60s...");
+  }
+
+  if (millis() < awakeUntil) {
+    doMeasurement();
+
+    if (usbDebugActive) {
+      unsigned long secLeft = (awakeUntil > millis()) ? (awakeUntil - millis()) / 1000 : 0;
+      Serial.printf("Gateway ACK: %s (Ch %d) | Deep Sleep in %lus\n\n",
+                    (lastSendStatus == 0) ? "OK" : "FAILED",
+                    cachedChannel, secLeft);
+    }
+
+    if (lastSendStatus == 0) {
+      blinkLEDOnce(80); // 1 flash = OK
+    } else {
+      for (int i = 0; i < 3; i++) blinkLEDOnce(60); // 3 flashes = No ACK
+    }
+
+    delay(3000);
+  } else {
+    doMeasurement();
+    gotoSleep();
+  }
 }
