@@ -36,7 +36,7 @@ const char senderID[11] = "ESPNow-001";
 #define USER_LED          LED_BUILTIN
 
 // Battery Calibration (Single-cell LiPo)
-#define BATT_EMPTY        2.50f
+#define BATT_EMPTY        2.75f
 #define BATT_FULL         4.20f
 #define NR_BATT_SAMPLES   5
 
